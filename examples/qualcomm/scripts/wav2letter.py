@@ -128,9 +128,13 @@ def main(args):
 
     # retrieve dataset, will take some time to download
     data_num = 100
-    inputs, targets, input_list = get_dataset(
-        data_size=data_num, artifact_dir=args.artifact
-    )
+    if args.compile_only:
+        inputs = instance.get_example_inputs()
+    else:
+        inputs, targets, input_list = get_dataset(
+            data_size=data_num, artifact_dir=args.artifact
+        )
+
     pte_filename = "w2l_qnn"
     build_executorch_binary(
         model,

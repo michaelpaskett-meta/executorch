@@ -169,6 +169,10 @@ test_model_with_qnn() {
     EXPORT_SCRIPT=inception_v3
   elif [[ "${MODEL_NAME}" == "vit" ]]; then
     EXPORT_SCRIPT=torchvision_vit
+  elif [[ "${MODEL_NAME}" == "edsr" ]]; then
+    EXPORT_SCRIPT=edsr
+  elif [[ "${MODEL_NAME}" == "w2l" ]]; then
+    EXPORT_SCRIPT=wav2letter
   fi
 
   # Use SM8450 for S22, SM8550 for S23, and SM8560 for S24
