@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from examples.models import MODEL_NAME_TO_MODEL
 
@@ -43,6 +43,79 @@ BENCHMARK_CONFIGS = {
         "llama3_coreml_ane",
     ],
 }
+
+
+def extract_all_configs(data, target_os=None):
+    if isinstance(data, dict):
+        # If target_os is specified, include "xplat" and the specified branch
+        include_branches = {"xplat", target_os} if target_os else data.keys()
+        return [
+            v
+            for key, value in data.items()
+            if key in include_branches
+            for v in extract_all_configs(value, target_os)
+        ]
+    elif isinstance(data, list):
+        return [v for item in data for v in extract_all_configs(item, target_os)]
+    else:
+        return [data]
+
+
+def generate_compatible_configs(model_name: str, target_os=None) -> List[str]:
+    """
+    Generate a list of compatible benchmark configurations for a given model name and target OS.
+
+    Args:
+        model_name (str): The name of the model to generate configurations for.
+        target_os (Optional[str]): The target operating system (e.g., 'android', 'ios').
+
+    Returns:
+        List[str]: A list of compatible benchmark configurations.
+
+    Raises:
+        None
+
+    Example:
+        generate_compatible_configs('meta-llama/Llama-3.2-1B', 'ios') -> ['llama3_fb16', 'llama3_coreml_ane']
+    """
+    configs = []
+    if is_valid_huggingface_model_id(model_name):
+        if model_name.startswith("meta-llama/"):
+            # LLaMA models
+            repo_name = model_name.split("meta-llama/")[1]
+            if "qlora" in repo_name.lower():
+                configs.append("llama3_qlora")
+            elif "spinquant" in repo_name.lower():
+                configs.append("llama3_spinquant")
+            else:
+                configs.append("llama3_fb16")
+                configs.extend(
+                    [
+                        config
+                        for config in BENCHMARK_CONFIGS.get(target_os, [])
+                        if config.startswith("llama")
+                    ]
+                )
+        else:
+            # Non-LLaMA models
+            configs.append("hf_xnnpack_fp32")
+    elif model_name in MODEL_NAME_TO_MODEL:
+        # ExecuTorch in-tree non-GenAI models
+        configs.append("xnnpack_q8")
+        if target_os != "xplat":
+            # Add OS-specific configs
+            configs.extend(
+                [
+                    config
+                    for config in BENCHMARK_CONFIGS.get(target_os, [])
+                    if not config.startswith("llama")
+                ]
+            )
+    else:
+        # Skip unknown models with a warning
+        logging.warning(f"Unknown or invalid model name '{model_name}'. Skipping.")
+
+    return configs
 
 
 def parse_args() -> Any:
@@ -81,6 +154,11 @@ def parse_args() -> Any:
         "--devices",
         type=comma_separated,  # Use the custom parser for comma-separated values
         help=f"Comma-separated device names. Available devices: {list(DEVICE_POOLS.keys())}",
+    )
+    parser.add_argument(
+        "--configs",
+        type=comma_separated,  # Use the custom parser for comma-separated values
+        help=f"Comma-separated benchmark configs. Available configs: {extract_all_configs(BENCHMARK_CONFIGS)}",
     )
 
     return parser.parse_args()
@@ -123,7 +201,7 @@ def is_valid_huggingface_model_id(model_name: str) -> bool:
     return bool(re.match(pattern, model_name))
 
 
-def get_benchmark_configs() -> Dict[str, Dict]:
+def get_benchmark_configs() -> Dict[str, Dict]:  # noqa: C901
     """
     Gather benchmark configurations for a given set of models on the target operating system and devices.
 
@@ -153,48 +231,26 @@ def get_benchmark_configs() -> Dict[str, Dict]:
         }
     """
     args = parse_args()
-    target_os = args.os
     devices = args.devices
     models = args.models
+    target_os = args.os
+    target_configs = args.configs
 
     benchmark_configs = {"include": []}
 
     for model_name in models:
         configs = []
-        if is_valid_huggingface_model_id(model_name):
-            if model_name.startswith("meta-llama/"):
-                # LLaMA models
-                repo_name = model_name.split("meta-llama/")[1]
-                if "qlora" in repo_name.lower():
-                    configs.append("llama3_qlora")
-                elif "spinquant" in repo_name.lower():
-                    configs.append("llama3_spinquant")
-                else:
-                    configs.append("llama3_fb16")
-                    configs.extend(
-                        [
-                            config
-                            for config in BENCHMARK_CONFIGS.get(target_os, [])
-                            if config.startswith("llama")
-                        ]
+        configs.extend(generate_compatible_configs(model_name, target_os))
+        print(f"Discovered all supported configs for model '{model_name}': {configs}")
+        if target_configs is not None:
+            for config in target_configs:
+                if config not in configs:
+                    raise Exception(
+                        f"Unsupported config '{config}' for model '{model_name}' on '{target_os}'. Skipped.\n"
+                        f"Supported configs are: {configs}"
                     )
-            else:
-                # Non-LLaMA models
-                configs.append("hf_xnnpack_fp32")
-        elif model_name in MODEL_NAME_TO_MODEL:
-            # ExecuTorch in-tree non-GenAI models
-            configs.append("xnnpack_q8")
-            configs.extend(
-                [
-                    config
-                    for config in BENCHMARK_CONFIGS.get(target_os, [])
-                    if not config.startswith("llama")
-                ]
-            )
-        else:
-            # Skip unknown models with a warning
-            logging.warning(f"Unknown or invalid model name '{model_name}'. Skipping.")
-            continue
+            configs = target_configs
+            print(f"Using provided configs {configs} for model '{model_name}'")
 
         # Add configurations for each valid device
         for device in devices:
